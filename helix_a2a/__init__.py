@@ -34,7 +34,7 @@ def workspace_size(cp_size: int) -> int:
     """Return the workspace size **in bytes** per rank for the given CP group size.
 
     >>> helix_a2a.workspace_size(cp_size=4)
-    37748736
+    16778240
     """
     return get_workspace_size_per_rank(cp_size)
 
