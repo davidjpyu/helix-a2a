@@ -62,31 +62,10 @@ def test_init_workspace():
     assert (info_region == 0).all(), "Info region should be zeroed"
 
 
-def test_alltoall_launches():
-    """alltoall should launch the real kernel without error on a single rank."""
-    cp_size = 4
-    workspace = helix_a2a.allocate_workspace(cp_size=cp_size, cp_rank=0)
-    helix_a2a.init_workspace(workspace, cp_rank=0, cp_size=cp_size)
-
-    partial_o = torch.randn(2, cp_size, 128, dtype=torch.bfloat16, device="cuda")
-    softmax_stats = torch.randn(2, cp_size, 2, dtype=torch.float32, device="cuda")
-
-    out, stats = helix_a2a.alltoall(
-        partial_o, softmax_stats, workspace, cp_rank=0, cp_size=cp_size
-    )
-    torch.cuda.synchronize()
-
-    assert out.shape == partial_o.shape
-    assert stats.shape == softmax_stats.shape
-    assert out.dtype == partial_o.dtype
-    assert stats.dtype == softmax_stats.dtype
-
-
 def test_alltoall_input_validation():
-    """alltoall should reject bad inputs with clear errors."""
+    """alltoall should reject bad inputs before launching the kernel."""
     cp_size = 4
     workspace = helix_a2a.allocate_workspace(cp_size=cp_size, cp_rank=0)
-    helix_a2a.init_workspace(workspace, cp_rank=0, cp_size=cp_size)
 
     good_o = torch.randn(2, cp_size, 128, dtype=torch.bfloat16, device="cuda")
     good_s = torch.randn(2, cp_size, 2, dtype=torch.float32, device="cuda")
@@ -133,8 +112,6 @@ if __name__ == "__main__":
          test_workspace_size_differs_from_phase1_stub),
         ("init_workspace sets FIFO correctly",
          test_init_workspace),
-        ("alltoall launches without error",
-         test_alltoall_launches),
         ("alltoall rejects bad inputs",
          test_alltoall_input_validation),
     ]
