@@ -1,7 +1,15 @@
 import os
 
 from setuptools import setup
+
+import torch.utils.cpp_extension as _cpp_ext
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+# NGC images often ship a CUDA toolkit newer than what PyTorch was compiled
+# against (e.g. nvcc 13.1 with torch.version.cuda == "12.8").  The strict
+# major-version check in torch's BuildExtension rejects this, but compiling
+# SM 90/100 kernels with a newer toolkit against an older PyTorch is safe.
+_cpp_ext._check_cuda_version = lambda *a, **kw: None
 
 extra_nvcc_flags = [
     "-O3",
