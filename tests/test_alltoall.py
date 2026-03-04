@@ -4,27 +4,17 @@ Run with torchrun:
 
     torchrun --nproc-per-node=N tests/test_alltoall.py
 
-where N is the number of GPUs (must be >= 2). The test:
+where N is the number of GPUs (must be >= 2).
 
-  1. Initializes torch.distributed (NCCL backend).
-  2. Sets up IPC-backed workspace via cuMem* driver API so the Helix kernel
-     can directly read/write all ranks' workspace memory via NVLink.
-  3. Generates identical random data across all ranks (seeded), then each
-     rank extracts its own slice for the all-to-all send.
-  4. Runs NCCL reference (two dist.all_to_all_single calls).
-  5. Runs Helix native (helix_a2a.alltoall with IPC workspace).
-  6. Compares outputs: max abs diff < 1e-3 for partial_o (bf16/fp16),
-     < 1e-5 for softmax_stats (float32).
+Container requirements:
+    --ipc=host --cap-add=SYS_PTRACE   (for POSIX FD handle exchange via pidfd)
 
 Requirements: SM 90+ GPU (H200/GB200), helix_a2a installed, cuda-python.
 """
 from __future__ import annotations
 
-import array
 import ctypes
 import os
-import socket as sock_mod
-import struct
 import sys
 from typing import List, Tuple
 
@@ -58,67 +48,49 @@ def _check_cu(result, ctx: str = ""):
     return None
 
 
-def _exchange_fds_via_sockets(
-    local_fd: int, cp_rank: int, cp_size: int
+def _resolve_posix_fds(
+    all_fds: List[int], all_pids: List[int], local_rank: int
 ) -> List[int]:
-    """Exchange POSIX FDs across ranks using Unix domain sockets + SCM_RIGHTS.
+    """Translate remote POSIX FDs to local FDs via pidfd syscalls.
 
-    Unlike pidfd_getfd (which needs CAP_SYS_PTRACE), SCM_RIGHTS is a
-    cooperative FD-passing mechanism that works in any Docker container
-    with --ipc=host and a shared /tmp filesystem.
+    Requires --cap-add=SYS_PTRACE in Docker containers.
+    Matches vllm-a2a's helix_mnnvl_workspace._resolve_posix_fds.
     """
-    sock_dir = f"/tmp/helix_ipc_{os.environ.get('MASTER_PORT', '29500')}"
-    os.makedirs(sock_dir, exist_ok=True)
+    SYS_pidfd_open = 434
+    SYS_pidfd_getfd = 438
 
-    sock_path = os.path.join(sock_dir, f"rank_{cp_rank}.sock")
-    if os.path.exists(sock_path):
-        os.unlink(sock_path)
+    libc = ctypes.CDLL(None, use_errno=True)
+    syscall = libc.syscall
 
-    server = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
-    server.bind(sock_path)
-    server.listen(cp_size)
+    resolved: List[int] = []
+    for i, (pid, fd) in enumerate(zip(all_pids, all_fds)):
+        if i == local_rank:
+            resolved.append(fd)
+            continue
 
-    all_paths: List[str] = [None] * cp_size
-    dist.all_gather_object(all_paths, sock_path)
-
-    fds: List[int] = [None] * cp_size
-    fds[cp_rank] = local_fd
-
-    for sender in range(cp_size):
-        if sender == cp_rank:
-            for _ in range(cp_size - 1):
-                conn, _ = server.accept()
-                fd_arr = array.array("i", [local_fd])
-                conn.sendmsg(
-                    [struct.pack("i", cp_rank)],
-                    [(sock_mod.SOL_SOCKET, sock_mod.SCM_RIGHTS, fd_arr)],
-                )
-                conn.close()
-        else:
-            client = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
-            client.connect(all_paths[sender])
-            msg, ancdata, _, _ = client.recvmsg(
-                4, sock_mod.CMSG_SPACE(struct.calcsize("i"))
+        pidfd = syscall(SYS_pidfd_open, pid, 0)
+        if pidfd < 0:
+            err = ctypes.get_errno()
+            raise RuntimeError(
+                f"pidfd_open({pid}) failed: errno {err} ({os.strerror(err)}). "
+                f"Ensure all ranks are on the same node and --ipc=host is set."
             )
-            for level, typ, data in ancdata:
-                if level == sock_mod.SOL_SOCKET and typ == sock_mod.SCM_RIGHTS:
-                    fds[sender] = struct.unpack("i", data[:4])[0]
-                    break
-            else:
-                raise RuntimeError(
-                    f"No FD received from rank {sender} via SCM_RIGHTS"
+
+        remote_fd = syscall(SYS_pidfd_getfd, pidfd, fd, 0)
+        if remote_fd < 0:
+            err = ctypes.get_errno()
+            hint = ""
+            if err == 1:
+                hint = (
+                    " Add --cap-add=SYS_PTRACE to your docker run command."
                 )
-            client.close()
+            raise RuntimeError(
+                f"pidfd_getfd(pidfd={pidfd}, fd={fd}) failed: errno {err} "
+                f"({os.strerror(err)}).{hint}"
+            )
+        resolved.append(remote_fd)
 
-        dist.barrier()
-
-    server.close()
-    try:
-        os.unlink(sock_path)
-    except OSError:
-        pass
-
-    return fds
+    return resolved
 
 
 def _ptr_to_strided_tensor(
@@ -182,20 +154,18 @@ def _ptr_to_strided_tensor(
 
     tensor = torch.utils.dlpack.from_dlpack(capsule)
 
-    # prevent GC of ctypes objects referenced by the tensor
     tensor._dlpack_keepalive = (shape_arr, stride_arr, mt, capsule)
 
     return tensor
 
 
 def allocate_ipc_workspace(cp_rank: int, cp_size: int) -> torch.Tensor:
-    """Set up a cross-rank workspace via cuMem* driver API + SCM_RIGHTS FD passing.
+    """Set up cross-rank workspace via cuMem driver API + POSIX FD handles.
 
-    Each rank allocates shareable physical memory, exports a POSIX FD handle,
-    exchanges FDs via Unix domain sockets (SCM_RIGHTS), then maps all ranks'
-    memory into a single contiguous virtual address range. The result is a
-    [cp_size, ws_elems] strided tensor where row j physically resides on rank
-    j's GPU.
+    Each rank allocates shareable physical memory, exports a POSIX FD,
+    exchanges FDs + PIDs via all_gather_object, translates remote FDs via
+    pidfd syscalls, then maps all ranks into a contiguous VA range.
+    Matches vllm-a2a's _allocate_mnnvl_memory for x86_64.
     """
     cuda = _get_cuda_driver()
 
@@ -240,7 +210,12 @@ def allocate_ipc_workspace(cp_rank: int, cp_size: int) -> torch.Tensor:
         "cuMemExportToShareableHandle",
     )
 
-    all_fds = _exchange_fds_via_sockets(int(local_fd), cp_rank, cp_size)
+    all_fds: List[int] = [None] * cp_size
+    all_pids: List[int] = [None] * cp_size
+    dist.all_gather_object(all_fds, int(local_fd))
+    dist.all_gather_object(all_pids, os.getpid())
+
+    resolved_fds = _resolve_posix_fds(all_fds, all_pids, cp_rank)
 
     total_va = aligned_row * cp_size
     base_ptr = _check_cu(
@@ -263,7 +238,7 @@ def allocate_ipc_workspace(cp_rank: int, cp_size: int) -> torch.Tensor:
         else:
             imported = _check_cu(
                 cuda.cuMemImportFromShareableHandle(
-                    all_fds[i], prop.requestedHandleTypes
+                    resolved_fds[i], prop.requestedHandleTypes
                 ),
                 f"cuMemImportFromShareableHandle(rank={i})",
             )
@@ -330,14 +305,12 @@ def run_test(
     send_o = full_o[:, :, rank, :].contiguous()  # [B, cp_size, D]
     send_s = full_s[:, :, rank, :].contiguous()  # [B, cp_size, S]
 
-    # NCCL reference
     nccl_recv_o, nccl_recv_s = nccl_alltoall_reference(
         send_o.clone(), send_s.clone()
     )
     torch.cuda.synchronize()
     dist.barrier()
 
-    # Helix native
     helix_recv_o, helix_recv_s = helix_a2a.alltoall(
         send_o.clone(), send_s.clone(), workspace,
         cp_rank=rank, cp_size=cp_size,
@@ -386,7 +359,6 @@ def main():
         print(f"  workspace_size: {ws_bytes:,} bytes ({ws_bytes/1024/1024:.1f} MiB)")
         print()
 
-    # Allocate IPC-backed workspace (once, reused across tests)
     if rank == 0:
         print("Setting up IPC workspace via cuMem driver API...")
     workspace = allocate_ipc_workspace(rank, cp_size)
