@@ -97,3 +97,5 @@ TORCH_LIBRARY(helix_a2a, m) {
       "Tensor workspace, int cp_rank, int cp_size) -> (Tensor, Tensor)",
       &alltoall_helix_native);
 }
+
+PYBIND11_MODULE(_C, m) {}
