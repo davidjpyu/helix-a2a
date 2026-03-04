@@ -1,15 +1,35 @@
 /*
- * Torch op registration for helix_a2a (Phase 1 — stubs).
+ * Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
  *
- * Registers three ops under the "helix_a2a" namespace:
- *   - get_helix_workspace_size_per_rank(int) -> int
- *   - initialize_helix_workspace(Tensor, int, int) -> void
- *   - alltoall_helix_native(Tensor, Tensor, Tensor, int, int) -> (Tensor, Tensor)
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
 
+#include <cstdlib>
+#include <string>
+
 #include "helix_alltoall.h"
+
+static int getEnvChannelCount() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* env = std::getenv("HELIX_A2A_CHANNEL_COUNT");
+    cached = (env && std::string(env) != "0") ? std::atoi(env) : 0;
+  }
+  return cached;
+}
 
 static int64_t get_helix_workspace_size_per_rank(int64_t cp_size) {
   return static_cast<int64_t>(
@@ -29,8 +49,14 @@ static void initialize_helix_workspace(torch::Tensor workspace,
               "cp_rank must be in [0, cp_size)");
 
   auto stream = at::cuda::getCurrentCUDAStream();
+  uint64_t* global_workspace_ptr =
+      reinterpret_cast<uint64_t*>(workspace.data_ptr());
   uint64_t* local_workspace_ptr =
       reinterpret_cast<uint64_t*>(workspace[cp_rank].data_ptr());
+  TORCH_CHECK(
+      local_workspace_ptr ==
+          global_workspace_ptr + cp_rank * workspace.stride(0),
+      "local_workspace_ptr must be at the correct offset");
   helix_a2a::kernels::initializeHelixWorkspace(local_workspace_ptr,
                                                static_cast<int>(cp_size),
                                                stream);
@@ -59,29 +85,93 @@ static std::tuple<torch::Tensor, torch::Tensor> alltoall_helix_native(
   TORCH_CHECK(softmax_stats.dim() >= 2,
               "softmax_stats must have at least 2 dimensions");
   TORCH_CHECK(partial_o.dim() == softmax_stats.dim(),
-              "partial_o and softmax_stats must have same number of dimensions");
+              "partial_o and softmax_stats must have same number of "
+              "dimensions");
 
+  int kv_lora_rank = partial_o.size(-1);
   TORCH_CHECK(partial_o.size(-2) == cp_size &&
                   softmax_stats.size(-2) == cp_size,
               "second-to-last dimension must equal cp_size");
   TORCH_CHECK(softmax_stats.size(-1) % 2 == 0 &&
                   softmax_stats.size(-1) >= 2,
               "softmax_stats last dimension must be divisible by 2 (float2)");
+  bool allowVariableField1 = softmax_stats.size(-1) > 2;
 
   for (int i = 0; i < partial_o.dim() - 2; i++) {
     TORCH_CHECK(partial_o.size(i) == softmax_stats.size(i),
-                "partial_o and softmax_stats must have matching leading dims");
+                "partial_o and softmax_stats must have matching dimensions "
+                "except last two");
   }
   TORCH_CHECK(partial_o.size(-1) * partial_o.element_size() % 16 == 0,
-              "partial_o last dim must be 16-byte aligned");
+              "partial_o must be aligned to 16 bytes");
 
   TORCH_CHECK(workspace.dim() == 2,
               "workspace must be 2D (strided across ranks)");
   TORCH_CHECK(workspace.size(0) == cp_size,
               "workspace must have cp_size rows");
 
-  // Stub: return clones (identity, no actual communication)
-  return std::make_tuple(partial_o.clone(), softmax_stats.clone());
+  int entry_count = 1;
+  for (int i = 0; i < partial_o.dim() - 2; i++) {
+    entry_count *= partial_o.size(i);
+  }
+
+  torch::Tensor partial_o_3d =
+      partial_o.reshape({entry_count, cp_size, kv_lora_rank});
+  torch::Tensor softmax_stats_3d = softmax_stats.reshape(
+      {entry_count, cp_size, softmax_stats.size(-1)});
+
+  torch::Tensor partial_o_out = torch::empty_like(partial_o);
+  torch::Tensor softmax_stats_out = torch::empty_like(softmax_stats);
+
+  torch::Tensor partial_o_out_3d =
+      partial_o_out.reshape({entry_count, cp_size, kv_lora_rank});
+  torch::Tensor softmax_stats_out_3d = softmax_stats_out.reshape(
+      {entry_count, cp_size, softmax_stats.size(-1)});
+
+  helix_a2a::kernels::HelixAllToAllParams params;
+
+  params.sendFields[0].dataPtr =
+      reinterpret_cast<uint8_t*>(partial_o_3d.data_ptr());
+  params.sendFields[0].elementCount = kv_lora_rank;
+  params.sendFields[0].elementSize = partial_o.element_size();
+  params.sendFields[0].stride =
+      partial_o_3d.stride(1) * partial_o.element_size();
+
+  params.recvFields[0].dataPtr =
+      reinterpret_cast<uint8_t*>(partial_o_out_3d.data_ptr());
+  params.recvFields[0].elementCount = kv_lora_rank;
+  params.recvFields[0].elementSize = partial_o.element_size();
+  params.recvFields[0].stride =
+      partial_o_out_3d.stride(1) * partial_o.element_size();
+
+  params.sendFields[1].dataPtr =
+      reinterpret_cast<uint8_t*>(softmax_stats_3d.data_ptr<float>());
+  params.sendFields[1].elementCount = softmax_stats.size(-1);
+  params.sendFields[1].elementSize = softmax_stats.element_size();
+  params.sendFields[1].stride =
+      softmax_stats_3d.stride(1) * softmax_stats.element_size();
+
+  params.recvFields[1].dataPtr =
+      reinterpret_cast<uint8_t*>(softmax_stats_out_3d.data_ptr<float>());
+  params.recvFields[1].elementCount = softmax_stats.size(-1);
+  params.recvFields[1].elementSize = softmax_stats.element_size();
+  params.recvFields[1].stride =
+      softmax_stats_out_3d.stride(1) * softmax_stats.element_size();
+
+  params.entryCount = entry_count;
+  params.workspace = reinterpret_cast<uint64_t*>(workspace.data_ptr());
+  params.workspaceStrideInU64 = workspace.stride(0);
+
+  params.cpRank = cp_rank;
+  params.cpSize = cp_size;
+  params.channelCount = getEnvChannelCount();
+  params.maxChannelCount =
+      helix_a2a::kernels::computeHelixMaxChannelCount(cp_size);
+
+  auto stream = at::cuda::getCurrentCUDAStream();
+  helix_a2a::kernels::launchHelixAllToAll(params, allowVariableField1, stream);
+
+  return std::make_tuple(partial_o_out, softmax_stats_out);
 }
 
 TORCH_LIBRARY(helix_a2a, m) {
