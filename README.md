@@ -7,7 +7,7 @@ Standalone Python package wrapping TRT-LLM Helix All-to-All kernels (MNNVL/FIFO/
 Requires PyTorch with CUDA support and a GPU with SM >= 90 (Hopper/Blackwell).
 
 ```bash
-pip install -e .
+python setup.py build_ext --inplace && pip install -e . --no-build-isolation
 ```
 
 ## Quick check

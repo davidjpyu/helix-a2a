@@ -24,7 +24,10 @@ extra_cxx_flags = ["-O3"]
 setup(
     name="helix_a2a",
     version="0.1.0",
+    description="Standalone Helix All-to-All CUDA extension",
     packages=["helix_a2a"],
+    python_requires=">=3.10",
+    install_requires=["torch>=2.0"],
     ext_modules=[
         CUDAExtension(
             name="helix_a2a._C",
