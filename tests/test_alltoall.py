@@ -23,6 +23,46 @@ import torch.distributed as dist
 
 import helix_a2a
 
+# ── DLPack types (module-level to prevent GC of ctypes function pointers) ──
+
+
+class _DLDataType(ctypes.Structure):
+    _fields_ = [("code", ctypes.c_uint8), ("bits", ctypes.c_uint8),
+                 ("lanes", ctypes.c_uint16)]
+
+
+class _DLDevice(ctypes.Structure):
+    _fields_ = [("device_type", ctypes.c_int), ("device_id", ctypes.c_int)]
+
+
+class _DLTensor(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p), ("device", _DLDevice),
+        ("ndim", ctypes.c_int), ("dtype", _DLDataType),
+        ("shape", ctypes.POINTER(ctypes.c_int64)),
+        ("strides", ctypes.POINTER(ctypes.c_int64)),
+        ("byte_offset", ctypes.c_size_t),
+    ]
+
+
+class _DLManagedTensor(ctypes.Structure):
+    pass
+
+
+_DL_DELETER_TYPE = ctypes.CFUNCTYPE(None, ctypes.POINTER(_DLManagedTensor))
+
+
+@_DL_DELETER_TYPE
+def _dl_noop_deleter(p):
+    pass
+
+
+_DLManagedTensor._fields_ = [
+    ("dl_tensor", _DLTensor), ("manager_ctx", ctypes.c_void_p),
+    ("deleter", _DL_DELETER_TYPE),
+]
+
+
 # ── IPC workspace via cuMem driver API ──────────────────────────────────
 
 
@@ -101,36 +141,6 @@ def _ptr_to_strided_tensor(
     PyCapsule_New.restype = ctypes.c_void_p
     PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
 
-    class _DLDataType(ctypes.Structure):
-        _fields_ = [("code", ctypes.c_uint8), ("bits", ctypes.c_uint8),
-                     ("lanes", ctypes.c_uint16)]
-
-    class _DLDevice(ctypes.Structure):
-        _fields_ = [("device_type", ctypes.c_int), ("device_id", ctypes.c_int)]
-
-    class _DLTensor(ctypes.Structure):
-        _fields_ = [
-            ("data", ctypes.c_void_p), ("device", _DLDevice),
-            ("ndim", ctypes.c_int), ("dtype", _DLDataType),
-            ("shape", ctypes.POINTER(ctypes.c_int64)),
-            ("strides", ctypes.POINTER(ctypes.c_int64)),
-            ("byte_offset", ctypes.c_size_t),
-        ]
-
-    class _DLManagedTensor(ctypes.Structure):
-        pass
-
-    _DELETER = ctypes.CFUNCTYPE(None, ctypes.POINTER(_DLManagedTensor))
-
-    @_DELETER
-    def _noop(p):
-        pass
-
-    _DLManagedTensor._fields_ = [
-        ("dl_tensor", _DLTensor), ("manager_ctx", ctypes.c_void_p),
-        ("deleter", _DELETER),
-    ]
-
     Arr2 = ctypes.c_int64 * 2
     shape_arr = Arr2(rows, cols)
     stride_arr = Arr2(stride_u64, 1)
@@ -147,7 +157,7 @@ def _ptr_to_strided_tensor(
     mt = _DLManagedTensor()
     mt.dl_tensor = dlt
     mt.manager_ctx = None
-    mt.deleter = _noop
+    mt.deleter = _dl_noop_deleter
 
     cap_ptr = PyCapsule_New(ctypes.pointer(mt), b"dltensor", None)
     capsule = ctypes.cast(cap_ptr, ctypes.py_object).value
@@ -265,14 +275,26 @@ def nccl_alltoall_reference(
     partial_o: torch.Tensor,
     softmax_stats: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Two dist.all_to_all_single calls — one for partial_o, one for stats."""
-    recv_o = torch.empty_like(partial_o)
-    recv_s = torch.empty_like(softmax_stats)
+    """NCCL all-to-all matching Helix's [B, cp_size, D] layout.
 
-    dist.all_to_all_single(recv_o.reshape(-1), partial_o.reshape(-1))
-    dist.all_to_all_single(recv_s.reshape(-1), softmax_stats.reshape(-1))
+    Helix treats dim -2 as the destination rank: send[:, j, :] goes to rank j.
+    NCCL all_to_all_single splits the flat tensor into N equal chunks where
+    chunk j goes to rank j. To align these, we permute [B, N, D] → [N, B, D]
+    before flattening so NCCL chunks match Helix's per-rank slicing, then
+    permute back on receive.
+    """
+    # [B, N, D] → [N, B, D] so flat chunk j = data for rank j
+    send_o = partial_o.transpose(0, 1).contiguous()
+    send_s = softmax_stats.transpose(0, 1).contiguous()
 
-    return recv_o, recv_s
+    recv_o = torch.empty_like(send_o)
+    recv_s = torch.empty_like(send_s)
+
+    dist.all_to_all_single(recv_o.reshape(-1), send_o.reshape(-1))
+    dist.all_to_all_single(recv_s.reshape(-1), send_s.reshape(-1))
+
+    # [N, B, D] → [B, N, D]
+    return recv_o.transpose(0, 1).contiguous(), recv_s.transpose(0, 1).contiguous()
 
 
 # ── Test logic ──────────────────────────────────────────────────────────
@@ -291,8 +313,9 @@ def run_test(
 
     All ranks generate the same full [B, cp_size, cp_size, D] tensor (same
     seed). Each rank extracts column ``rank`` as its send buffer — so rank r
-    sends full[:, :, r, :], which is [B, cp_size, D]. After all-to-all, rank r
-    should receive full[:, r, :, :] (row r from each sender).
+    sends full[:, :, r, :] which is [B, cp_size, D]. After all-to-all,
+    send[:, j, :] was sent to rank j, so rank r receives from each sender i
+    the slice that sender i had at position [:, r, :].
     """
     dtype_name = "bf16" if dtype == torch.bfloat16 else "fp16"
 
