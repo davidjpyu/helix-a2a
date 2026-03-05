@@ -54,10 +54,10 @@ BENCH_MODE=${BENCH_MODE:-"both"}  # eager, graph, or both
 A2A_BACKEND=${A2A_BACKEND:-"both"}   # nccl, native, or both
 
 # --- Container config ---
-CONTAINER_IMAGE=${CONTAINER_IMAGE:-"/mnt/cifs/home/sungsooh_storage/containers/helix-vllm-v16-blackwell.sqsh"}
-STORAGE_PATH=${STORAGE_PATH:-"/mnt/cifs/home/sungsooh_storage"}
-HELIX_A2A_PATH=${HELIX_A2A_PATH:-"${STORAGE_PATH}/helix-a2a"}
-CONTAINER_MODEL_PATH="/models"
+CONTAINER_IMAGE=${CONTAINER_IMAGE:-"nvcr.io/nvstaging/nim/helix-vllm:v18-blackwell"}
+STORAGE_PATH=${STORAGE_PATH:-"/home/davidyu"}
+HELIX_A2A_PATH=${HELIX_A2A_PATH:-"${STORAGE_PATH}/workspace/helix/helix-a2a"}
+CONTAINER_MODEL_PATH="/home/davidyu"
 
 # --- Derived ---
 TP_SIZE=$((SLURM_NNODES * 4))
@@ -70,7 +70,7 @@ if [ -z "${HEAD_IP}" ] || [[ "${HEAD_IP}" == 127.* ]]; then
     HEAD_IP=$(ssh ${HEAD_NODE} "hostname -I | awk '{print \$1}'" 2>/dev/null || echo "")
 fi
 
-SCRIPT_CONTAINER="${CONTAINER_MODEL_PATH}/helix-vllm/benchmark/scripts/benchmark_helix_pipeline.py"
+SCRIPT_CONTAINER="${CONTAINER_MODEL_PATH}/workspace/helix/helix-a2a/benchmark/scripts/benchmark_helix_pipeline.py"
 RESULT_DIR="${STORAGE_PATH}/profiling-results/pipeline-bench-${SLURM_JOB_ID}"
 
 echo "============================================================"
