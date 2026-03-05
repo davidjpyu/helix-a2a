@@ -42,14 +42,6 @@ out, stats = helix_a2a.alltoall(partial_o, softmax_stats, workspace, cp_rank=ran
 | `HELIX_A2A_USE_MNNVL` | `auto` | `0` = device mem, `1` = MNNVL, `auto` = auto-detect |
 | `HELIX_A2A_CHANNEL_COUNT` | `0` | Override channel count (0 = auto) |
 
-## Benchmark
-
-See [docs/BENCHMARK_GUIDE.md](docs/BENCHMARK_GUIDE.md) for how to run the
-pipeline micro-benchmark (DCP / Helix NCCL / Helix Native side by side).
-
-See [docs/BENCHMARK_DESIGN.md](docs/BENCHMARK_DESIGN.md) for the integration
-architecture and what each measurement means.
-
 ## Development Status
 
 - ~~Phase 1~~: Package skeleton with CUDA build scaffolding
