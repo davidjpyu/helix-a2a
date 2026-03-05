@@ -54,7 +54,7 @@ BENCH_MODE=${BENCH_MODE:-"both"}  # eager, graph, or both
 A2A_BACKEND=${A2A_BACKEND:-"both"}   # nccl, native, or both
 
 # --- Container config ---
-CONTAINER_IMAGE=${CONTAINER_IMAGE:-"nvcr.io/nvstaging/nim/helix-vllm:v18-blackwell"}
+CONTAINER_IMAGE=${CONTAINER_IMAGE:-"nvcr.io/nvstaging/nim/helix-vllm:v16-blackwell"}
 STORAGE_PATH=${STORAGE_PATH:-"/home/davidyu"}
 HELIX_A2A_PATH=${HELIX_A2A_PATH:-"${STORAGE_PATH}/workspace/helix/helix-a2a"}
 CONTAINER_MODEL_PATH="/home/davidyu"
