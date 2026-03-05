@@ -902,7 +902,7 @@ def main():
             cp_size=N,
             cp_rank=my_rank_in_group,
             device=f"cuda:{local_rank}",
-            mnnvl="auto",
+            mnnvl=True,
             cpu_group=my_group,
         )
         helix_a2a.init_workspace(native_workspace, cp_rank=my_rank_in_group, cp_size=N)
