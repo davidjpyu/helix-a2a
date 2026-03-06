@@ -24,6 +24,9 @@ Usage:
     # With native A2A backend:
     srun ... python benchmark_helix_pipeline.py --dcp 2 --a2a-backend both
 
+    # DeepSeek MLA (V2-Lite): use --model v2lite
+    python benchmark_helix_pipeline.py --dcp 4 --model v2lite --a2a-backend both
+
     # Wrap with nsys for timeline analysis:
     srun ... nsys profile -t cuda,nvtx,nccl --cuda-graph-trace=node -s none \\
         -o /path/to/output \\
