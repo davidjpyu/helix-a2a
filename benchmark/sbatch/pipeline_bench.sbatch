@@ -140,7 +140,7 @@ TOTAL_GPUS=$((SLURM_NNODES * 4))
 # Install helix-a2a inside the container if needed
 INSTALL_CMD=""
 if [ "${A2A_BACKEND}" != "nccl" ] && [ -d "${HELIX_A2A_PATH}" ]; then
-    INSTALL_CMD="pip install -e /opt/helix-a2a && "
+    INSTALL_CMD="cd /opt/helix-a2a && python setup.py build_ext --inplace && pip install -e . --no-build-isolation && cd /workspace && "
 fi
 
 for MODEL in ${MODELS}; do
