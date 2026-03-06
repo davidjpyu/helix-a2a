@@ -137,10 +137,10 @@ TOTAL_GPUS=$((SLURM_NNODES * 4))
 # SLURM sets SLURM_PROCID (global rank), SLURM_LOCALID (local rank),
 # SLURM_NTASKS (world size) — the Python script picks these up automatically.
 
-# Install helix-a2a inside the container if needed
+# Make helix-a2a importable (pre-built .so must exist from interactive build)
 INSTALL_CMD=""
 if [ "${A2A_BACKEND}" != "nccl" ] && [ -d "${HELIX_A2A_PATH}" ]; then
-    INSTALL_CMD="cd /opt/helix-a2a && python setup.py build_ext --inplace && pip install -e . --no-build-isolation && cd /workspace && "
+    INSTALL_CMD="export PYTHONPATH=/opt/helix-a2a:\$PYTHONPATH && "
 fi
 
 for MODEL in ${MODELS}; do
