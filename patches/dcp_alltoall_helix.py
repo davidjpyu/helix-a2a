@@ -59,14 +59,10 @@ def _get_helix_workspace(cp_rank: int, cp_size: int, device_group):
     cpu_group = None
     if mnnvl is not False:
         try:
-            gloo_ranks = list(range(cp_size))
-            logger.error("[HELIX_DEBUG] rank=%d creating Gloo group with ranks=%s "
-                         "global_rank=%d", cp_rank, gloo_ranks, dist.get_rank())
             cpu_group = dist.new_group(
-                ranks=gloo_ranks,
+                ranks=list(range(cp_size)),
                 backend="gloo",
             )
-            logger.error("[HELIX_DEBUG] rank=%d Gloo group created OK", cp_rank)
         except Exception:
             cpu_group = None
             logger.warning("Failed to create Gloo group for MNNVL; "
@@ -496,13 +492,6 @@ def _dcp_a2a_helix_native(
     B, H, D = local_output.shape
     H_per_rank = H // world_size
 
-    if cp_rank == 0:
-        logger.error("[HELIX_DEBUG] rank=%d input: out=%s dtype=%s lse=%s dtype=%s "
-                     "B=%d H=%d D=%d H_per_rank=%d world_size=%d is_base_e=%s",
-                     cp_rank, local_output.shape, local_output.dtype,
-                     local_lse.shape, local_lse.dtype,
-                     B, H, D, H_per_rank, world_size, is_lse_base_on_e)
-
     # --- Reshape output: [B, H, D] -> [B*H_per_rank, N, D] ---
     # view splits H into (N, H/N), permute puts N as the scatter dim
     send_output = (
@@ -531,20 +520,11 @@ def _dcp_a2a_helix_native(
     flat_output = send_output.reshape(B * H_per_rank, world_size, D)
     flat_stats = send_stats.reshape(B * H_per_rank, world_size, 2)
 
-    if cp_rank == 0:
-        logger.error("[HELIX_DEBUG] rank=%d flat_output=%s dtype=%s "
-                     "flat_stats=%s dtype=%s workspace=%s",
-                     cp_rank, flat_output.shape, flat_output.dtype,
-                     flat_stats.shape, flat_stats.dtype, workspace.shape)
-
-    # --- Fused A2A (on default stream, with full sync before) ---
-    torch.cuda.current_stream().synchronize()
-    dist.barrier(group=cp_group.device_group)
+    # --- Fused A2A ---
     recv_output, recv_stats = helix_a2a.alltoall(
         flat_output, flat_stats, workspace,
         cp_rank=cp_rank, cp_size=world_size,
     )
-    torch.cuda.current_stream().synchronize()
 
     # --- Reshape back for Triton combine: [N, B, H_per_rank, D] ---
     recv_output = (
