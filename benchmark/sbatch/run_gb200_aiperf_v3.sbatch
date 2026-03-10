@@ -938,6 +938,8 @@ export BENCH_NSYS_PROFILE="${NSYS_PROFILE}"
 export BENCH_DEADLINE="${DEADLINE}"
 export BENCH_MIN_CONFIG_SECS="${MIN_CONFIG_SECS}"
 export TOTAL_POINTS
+export CONFIGS
+export CONCURRENCY
 
 # =============================================================================
 # Launch
