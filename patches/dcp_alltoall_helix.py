@@ -494,6 +494,13 @@ def _dcp_a2a_helix_native(
     B, H, D = local_output.shape
     H_per_rank = H // world_size
 
+    if cp_rank == 0:
+        logger.error("[HELIX_DEBUG] rank=%d input: out=%s dtype=%s lse=%s dtype=%s "
+                     "B=%d H=%d D=%d H_per_rank=%d world_size=%d is_base_e=%s",
+                     cp_rank, local_output.shape, local_output.dtype,
+                     local_lse.shape, local_lse.dtype,
+                     B, H, D, H_per_rank, world_size, is_lse_base_on_e)
+
     # --- Reshape output: [B, H, D] -> [B*H_per_rank, N, D] ---
     # view splits H into (N, H/N), permute puts N as the scatter dim
     send_output = (
@@ -516,18 +523,28 @@ def _dcp_a2a_helix_native(
     if is_lse_base_on_e:
         send_stats[..., 0] = send_lse
     else:
-        # helix_a2a expects base-e; convert from base-2
         send_stats[..., 0] = send_lse * 1.44269504089  # log2(e)
 
     # Flatten leading dims: [B*H_per_rank, N, D] and [B*H_per_rank, N, 2]
     flat_output = send_output.reshape(B * H_per_rank, world_size, D)
     flat_stats = send_stats.reshape(B * H_per_rank, world_size, 2)
 
+    if cp_rank == 0:
+        logger.error("[HELIX_DEBUG] rank=%d flat_output=%s dtype=%s "
+                     "flat_stats=%s dtype=%s workspace=%s",
+                     cp_rank, flat_output.shape, flat_output.dtype,
+                     flat_stats.shape, flat_stats.dtype, workspace.shape)
+
     # --- Fused A2A ---
+    torch.cuda.synchronize()
+    logger.error("[HELIX_DEBUG] rank=%d calling helix_a2a.alltoall...", cp_rank)
     recv_output, recv_stats = helix_a2a.alltoall(
         flat_output, flat_stats, workspace,
         cp_rank=cp_rank, cp_size=world_size,
     )
+    torch.cuda.synchronize()
+    logger.error("[HELIX_DEBUG] rank=%d alltoall returned! recv_output=%s recv_stats=%s",
+                 cp_rank, recv_output.shape, recv_stats.shape)
 
     # --- Reshape back for Triton combine: [N, B, H_per_rank, D] ---
     recv_output = (
