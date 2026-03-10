@@ -588,19 +588,21 @@ def should_use_mnnvl(
             return False
         return True
 
-    # auto: MNNVL when multi-node + aarch64 (GB200) + cuda-python
+    # auto: MNNVL when aarch64 (GB200) + cuda-python + cpu_group available.
+    # On aarch64, FABRIC handles work both intra-node and cross-node.
+    # On x86_64 (H200), MNNVL requires explicit opt-in (HELIX_A2A_USE_MNNVL=1)
+    # because POSIX FD sharing needs SYS_PTRACE and is intra-node only.
     if cpu_group is None:
         return False
     if not is_cuda_driver_available():
         return False
-    if not _is_multi_node(cpu_group):
-        return False
     if not _is_fabric_capable():
-        logger.info(
-            "Multi-node detected on x86_64 — MNNVL not available "
-            "(no cross-node NVLink on H200). Using device memory. "
-            "Set HELIX_A2A_USE_MNNVL=1 to force intra-node MNNVL."
-        )
+        if _is_multi_node(cpu_group):
+            logger.info(
+                "Multi-node detected on x86_64 — MNNVL not available "
+                "(no cross-node NVLink on H200). Using device memory. "
+                "Set HELIX_A2A_USE_MNNVL=1 to force intra-node MNNVL."
+            )
         return False
     return True
 
