@@ -50,13 +50,11 @@ def _get_helix_workspace(cp_rank: int, cp_size: int, device_group):
 
     import helix_a2a
 
-    mnnvl_setting = os.environ.get("HELIX_A2A_USE_MNNVL", "auto")
+    mnnvl_setting = os.environ.get("HELIX_A2A_USE_MNNVL", "1")
     if mnnvl_setting == "0":
         mnnvl = False
-    elif mnnvl_setting == "1":
-        mnnvl = True
     else:
-        mnnvl = "auto"
+        mnnvl = True
 
     cpu_group = None
     if mnnvl is not False:
