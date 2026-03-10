@@ -61,10 +61,14 @@ def _get_helix_workspace(cp_rank: int, cp_size: int, device_group):
     cpu_group = None
     if mnnvl is not False:
         try:
+            gloo_ranks = list(range(cp_size))
+            logger.error("[HELIX_DEBUG] rank=%d creating Gloo group with ranks=%s "
+                         "global_rank=%d", cp_rank, gloo_ranks, dist.get_rank())
             cpu_group = dist.new_group(
-                ranks=list(range(cp_size)),
+                ranks=gloo_ranks,
                 backend="gloo",
             )
+            logger.error("[HELIX_DEBUG] rank=%d Gloo group created OK", cp_rank)
         except Exception:
             cpu_group = None
             logger.warning("Failed to create Gloo group for MNNVL; "
@@ -537,7 +541,13 @@ def _dcp_a2a_helix_native(
 
     # --- Fused A2A ---
     torch.cuda.synchronize()
-    logger.error("[HELIX_DEBUG] rank=%d calling helix_a2a.alltoall...", cp_rank)
+    dist.barrier(group=cp_group.device_group)
+    logger.error("[HELIX_DEBUG] rank=%d (global_rank=%d) calling helix_a2a.alltoall "
+                 "cp_rank=%d cp_size=%d flat_output=%s flat_stats=%s "
+                 "output_is_contiguous=%s stats_is_contiguous=%s",
+                 cp_rank, dist.get_rank(), cp_rank, world_size,
+                 flat_output.shape, flat_stats.shape,
+                 flat_output.is_contiguous(), flat_stats.is_contiguous())
     recv_output, recv_stats = helix_a2a.alltoall(
         flat_output, flat_stats, workspace,
         cp_rank=cp_rank, cp_size=world_size,
