@@ -5,8 +5,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --time=08:00:00
-#SBATCH --output=slurm-logs/helix-a2a-aiperf-%j.out
-#SBATCH --error=slurm-logs/helix-a2a-aiperf-%j.err
+#SBATCH --output=/home/davidyu/workspace/helix/helix-a2a/benchmark/sbatch/slurm-logs/helix-a2a-aiperf-%j.out
+#SBATCH --error=/home/davidyu/workspace/helix/helix-a2a/benchmark/sbatch/slurm-logs/helix-a2a-aiperf-%j.err
 #SBATCH --exclusive
 #SBATCH --mem=0
 
