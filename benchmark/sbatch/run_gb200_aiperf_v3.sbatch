@@ -300,7 +300,7 @@ build_vllm_cmd() {
         cmd="${cmd} --tensor-parallel-size-attention ${tpa}"
     fi
     cmd="${cmd} --enable-prefix-caching"
-    cmd="${cmd} --disable-log-requests --port 8000"
+    cmd="${cmd} --disable-log-stats --port 8000"
     echo "${cmd}"
 }
 
@@ -567,6 +567,14 @@ fi
 timestamp() { echo "[$(date '+%H:%M:%S') +$(( ($(date +%s) - BENCH_JOB_START) / 60 ))m]"; }
 
 # =========================================================================
+# Install Ray on ALL nodes (no longer a default vLLM dep since v20+)
+# =========================================================================
+if ! python3 -c "import ray" &>/dev/null; then
+    echo "$(timestamp) $(hostname): Installing Ray..."
+    pip install --no-cache-dir "ray[default]>=2.48.0" 2>&1 | tail -3
+fi
+
+# =========================================================================
 # Install helix_a2a and patch vLLM (ALL nodes, before Ray split)
 # =========================================================================
 
@@ -710,7 +718,7 @@ build_vllm_cmd() {
     if [ "${dcp}" -gt 1 ]; then cmd="${cmd} --decode-context-parallel-size ${dcp}"; fi
     if [ -n "${comm}" ] && [ "${comm}" != "ag_rs" ]; then cmd="${cmd} --dcp-comm-backend ${comm}"; fi
     if [ -n "${tpa}" ]; then cmd="${cmd} --tensor-parallel-size-attention ${tpa}"; fi
-    cmd="${cmd} --enable-prefix-caching --disable-log-requests --port 8000"
+    cmd="${cmd} --enable-prefix-caching --disable-log-stats --port 8000"
     echo "${cmd}"
 }
 
