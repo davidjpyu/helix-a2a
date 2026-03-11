@@ -41,7 +41,7 @@ _helix_workspace = None
 _helix_initialized = False
 
 
-def _get_helix_workspace(cp_rank: int, cp_size: int, device_group):
+def _get_helix_workspace(cp_rank: int, cp_size: int, cp_group):
     """Lazy-initialize the helix_a2a workspace (once per process)."""
     global _helix_workspace, _helix_initialized
 
@@ -58,18 +58,7 @@ def _get_helix_workspace(cp_rank: int, cp_size: int, device_group):
     else:
         mnnvl = "auto"
 
-    cpu_group = None
-    if mnnvl is not False:
-        try:
-            cpu_group = dist.new_group(
-                ranks=list(range(cp_size)),
-                backend="gloo",
-            )
-        except Exception:
-            cpu_group = None
-            logger.warning("Failed to create Gloo group for MNNVL; "
-                           "falling back to device memory workspace")
-            mnnvl = False
+    cpu_group = cp_group.cpu_group if mnnvl is not False else None
 
     workspace = helix_a2a.allocate_workspace(
         cp_size=cp_size,
@@ -486,7 +475,7 @@ def _dcp_a2a_helix_native(
     world_size = cp_group.world_size
     cp_rank = cp_group.rank_in_group
 
-    workspace = _get_helix_workspace(cp_rank, world_size, cp_group.device_group)
+    workspace = _get_helix_workspace(cp_rank, world_size, cp_group)
 
     local_output = cp_attn_out.contiguous()  # [B, H, D]
     local_lse = cp_attn_lse.contiguous()     # [B, H]
