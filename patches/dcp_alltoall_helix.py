@@ -33,22 +33,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Helix Native backend (lazy init)
+# Helix Native backend — eager import, eager init before graph capture
 # ---------------------------------------------------------------------------
+
+_helix_a2a = None
+if os.environ.get("HELIX_A2A_BACKEND", "nccl").lower() == "native":
+    try:
+        import helix_a2a as _helix_a2a
+    except ImportError:
+        logger.error(
+            "HELIX_A2A_BACKEND=native but helix_a2a is not installed. "
+            "Install with: pip install -e /path/to/helix-a2a --no-build-isolation")
+        raise
 
 _HELIX_BACKEND = os.environ.get("HELIX_A2A_BACKEND", "nccl").lower()
 _helix_workspace = None
-_helix_initialized = False
+_helix_cp_size = 0
 
 
-def _get_helix_workspace(cp_rank: int, cp_size: int, cp_group):
-    """Lazy-initialize the helix_a2a workspace (once per process)."""
-    global _helix_workspace, _helix_initialized
+def _init_helix_workspace(cp_rank: int, cp_size: int, cp_group):
+    """Allocate and initialize the helix_a2a MNNVL workspace.
 
-    if _helix_initialized:
-        return _helix_workspace
-
-    import helix_a2a
+    This performs Gloo collectives for MNNVL address exchange, so all ranks
+    in the DCP group must call it synchronously.  Must NOT be called inside
+    CUDA graph capture (ranks are not synchronised during capture → deadlock).
+    """
+    global _helix_workspace, _helix_cp_size
 
     mnnvl_setting = os.environ.get("HELIX_A2A_USE_MNNVL", "auto")
     if mnnvl_setting == "0":
@@ -60,19 +70,60 @@ def _get_helix_workspace(cp_rank: int, cp_size: int, cp_group):
 
     cpu_group = cp_group.cpu_group if mnnvl is not False else None
 
-    workspace = helix_a2a.allocate_workspace(
+    workspace = _helix_a2a.allocate_workspace(
         cp_size=cp_size,
         cp_rank=cp_rank,
         mnnvl=mnnvl,
         cpu_group=cpu_group,
     )
-    helix_a2a.init_workspace(workspace, cp_rank, cp_size)
+    _helix_a2a.init_workspace(workspace, cp_rank, cp_size)
 
     _helix_workspace = workspace
-    _helix_initialized = True
+    _helix_cp_size = cp_size
     logger.info("helix_a2a workspace initialized: cp_rank=%d cp_size=%d "
                 "mnnvl=%s shape=%s", cp_rank, cp_size, mnnvl, workspace.shape)
     return workspace
+
+
+def _get_helix_workspace(cp_rank: int, cp_size: int, cp_group):
+    """Return the helix_a2a workspace, initialising on first call.
+
+    Re-initialises if cp_size changed (e.g. Ray worker reused across
+    different DCP configurations).  Raises inside CUDA graph capture if the
+    workspace has not been pre-initialised — call
+    ``dcp_a2a_ensure_initialized`` before capture to avoid this.
+    """
+    if _helix_workspace is not None and _helix_cp_size == cp_size:
+        return _helix_workspace
+
+    if torch.cuda.is_current_stream_capturing():
+        raise RuntimeError(
+            "helix_a2a workspace is not initialised and cannot be "
+            "initialised inside CUDA graph capture (MNNVL allocation "
+            "requires synchronous Gloo collectives across all DCP ranks). "
+            "Call dcp_a2a_ensure_initialized(cp_group) before graph "
+            "capture, e.g. during model warmup.")
+
+    return _init_helix_workspace(cp_rank, cp_size, cp_group)
+
+
+def dcp_a2a_ensure_initialized(cp_group: "GroupCoordinator") -> None:
+    """Pre-initialise the helix_a2a workspace for the native backend.
+
+    Must be called **before** CUDA graph capture when
+    ``HELIX_A2A_BACKEND=native``.  Safe to call multiple times; no-op after
+    the first successful initialisation (for the same ``cp_size``).
+
+    Typical call site: after DCP groups are created, before
+    ``compile_or_warm_up_model``.
+    """
+    if _HELIX_BACKEND != "native":
+        return
+    cp_rank = cp_group.rank_in_group
+    cp_size = cp_group.world_size
+    if _helix_workspace is not None and _helix_cp_size == cp_size:
+        return
+    _init_helix_workspace(cp_rank, cp_size, cp_group)
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +425,7 @@ def dcp_a2a_lse_reduce(
         return cp_attn_out
 
     if _HELIX_BACKEND == "native":
+        dcp_a2a_ensure_initialized(cp_group)
         return _dcp_a2a_helix_native(
             cp_attn_out, cp_attn_lse, cp_group,
             return_lse=return_lse,
@@ -470,8 +522,6 @@ def _dcp_a2a_helix_native(
         output: [B, H, D] -> view [B, N, H/N, D] -> permute [B, H/N, N, D]
         lse:    [B, H]    -> view [B, N, H/N]     -> permute [B, H/N, N] -> pad to S=2
     """
-    import helix_a2a
-
     world_size = cp_group.world_size
     cp_rank = cp_group.rank_in_group
 
@@ -512,7 +562,7 @@ def _dcp_a2a_helix_native(
     flat_stats = send_stats.reshape(B * H_per_rank, world_size, 2)
 
     # --- Fused A2A ---
-    recv_output, recv_stats = helix_a2a.alltoall(
+    recv_output, recv_stats = _helix_a2a.alltoall(
         flat_output, flat_stats, workspace,
         cp_rank=cp_rank, cp_size=world_size,
     )
