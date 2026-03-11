@@ -167,8 +167,13 @@ CONTAINER_IMAGE="${CONTAINER_IMAGE:-${STORAGE_PATH}/containers/helix-vllm-v19-bl
 CONTAINER_MODEL_PATH="/models"
 
 BENCHMARK_VERSION=${BENCHMARK_VERSION:-"v50"}
-RESULT_BASE_HOST="${STORAGE_PATH}/benchmark-results/${BENCHMARK_VERSION}-gb200-${TP_SIZE}gpu"
-RESULT_BASE="${CONTAINER_MODEL_PATH}/benchmark-results/${BENCHMARK_VERSION}-gb200-${TP_SIZE}gpu"
+RESULT_STORAGE="${RESULT_STORAGE:-${STORAGE_PATH}}"
+RESULT_BASE_HOST="${RESULT_STORAGE}/benchmark-results/${BENCHMARK_VERSION}-gb200-${TP_SIZE}gpu"
+if [ "${RESULT_STORAGE}" = "${STORAGE_PATH}" ]; then
+    RESULT_BASE="${CONTAINER_MODEL_PATH}/benchmark-results/${BENCHMARK_VERSION}-gb200-${TP_SIZE}gpu"
+else
+    RESULT_BASE="${RESULT_STORAGE}/benchmark-results/${BENCHMARK_VERSION}-gb200-${TP_SIZE}gpu"
+fi
 
 # =============================================================================
 # Container Environment
@@ -188,6 +193,9 @@ else
 fi
 
 CONTAINER_MOUNTS="${STORAGE_PATH}:${CONTAINER_MODEL_PATH}"
+if [ "${RESULT_STORAGE}" != "${STORAGE_PATH}" ]; then
+    CONTAINER_MOUNTS="${CONTAINER_MOUNTS},${RESULT_STORAGE}:${RESULT_STORAGE}"
+fi
 if [ -n "${IMEX_CHANNEL}" ]; then
     CONTAINER_MOUNTS="${CONTAINER_MOUNTS},${IMEX_DIR}:${IMEX_DIR}"
 fi
