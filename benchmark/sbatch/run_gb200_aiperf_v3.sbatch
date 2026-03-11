@@ -163,7 +163,7 @@ if [ "${DRY_RUN}" = "true" ]; then
     HEAD_IP="10.0.0.1"
 fi
 
-CONTAINER_IMAGE="${CONTAINER_IMAGE:-${STORAGE_PATH}/containers/helix-vllm-v19-blackwell.sqsh}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-${STORAGE_PATH}/containers/helix-vllm-v20-blackwell.sqsh}"
 CONTAINER_MODEL_PATH="/models"
 
 BENCHMARK_VERSION=${BENCHMARK_VERSION:-"v50"}
@@ -603,7 +603,7 @@ if [ "${SLURM_PROCID}" -ne 0 ]; then
     echo "$(timestamp) Worker $(hostname): connecting to Ray at ${BENCH_HEAD_IP}:6379"
     ray start --address="${BENCH_HEAD_IP}:6379" --num-gpus=4 --disable-usage-stats
     echo "$(timestamp) Worker $(hostname): connected"
-    while [ ! -f "${RAY_DONE_FLAG}" ]; do sleep 10; done
+    while [ ! -f "${RAY_DONE_FLAG}" ]; do sleep 5; done
     echo "$(timestamp) Worker $(hostname): done, exiting"
     ray stop 2>/dev/null || true
     exit 0
@@ -915,7 +915,7 @@ if [ "${SLURM_NNODES}" -gt 1 ]; then
     echo "$(timestamp) Stopping Ray..."
     ray stop
     touch "${RAY_DONE_FLAG}"
-    sleep 5
+    sleep 30
     rm -f "${RAY_READY_FLAG}" "${RAY_DONE_FLAG}" 2>/dev/null || true
 fi
 echo "$(timestamp) Inner script complete."
