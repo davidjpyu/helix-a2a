@@ -44,7 +44,13 @@ HELIX_A2A_HOST="${HOME}/workspace/helix/helix-a2a"
 
 # Site detection
 HEAD_NODE=$(scontrol show hostnames "${SLURM_NODELIST}" | head -1)
-HEAD_IP=$(getent hosts "${HEAD_NODE}" | awk '{print $1}')
+HEAD_IP=$(scontrol show node "${HEAD_NODE}" | grep -oP 'NodeAddr=\K[^ ]+')
+if [[ "${HEAD_IP}" =~ [a-zA-Z] ]]; then
+    HEAD_IP=$(getent ahosts "${HEAD_IP}" 2>/dev/null | grep -v ':' | head -1 | awk '{print $1}')
+fi
+if [ -z "${HEAD_IP}" ] || [[ "${HEAD_IP}" == 127.* ]]; then
+    HEAD_IP=$(ssh "${HEAD_NODE}" "hostname -I | awk '{print \$1}'" 2>/dev/null || echo "")
+fi
 
 CONTAINER_IMAGE="${STORAGE_PATH}/containers/helix-vllm-v20-blackwell.sqsh"
 CONTAINER_MOUNTS="${STORAGE_PATH}:/models,${HELIX_A2A_HOST}:/helix-a2a"
@@ -72,7 +78,7 @@ echo "  Prompts: ${NUM_PROMPTS}, Max tokens: ${MAX_TOKENS}"
 echo "============================================================"
 
 # Generate inner script
-INNER_SCRIPT="/tmp/correctness_inner_${SLURM_JOB_ID}.sh"
+INNER_SCRIPT="${HELIX_A2A_HOST}/benchmark/sbatch/slurm-logs/correctness_inner_${SLURM_JOB_ID}.sh"
 cat > "${INNER_SCRIPT}" << 'INNER_EOF'
 #!/bin/bash
 set -uo pipefail
@@ -300,7 +306,7 @@ srun --nodes=${SLURM_NNODES} --ntasks=${SLURM_NNODES} \
     --container-workdir=/workspace \
     --no-container-mount-home \
     --export=ALL \
-    bash "${INNER_SCRIPT}"
+    bash "/helix-a2a/benchmark/sbatch/slurm-logs/correctness_inner_${SLURM_JOB_ID}.sh"
 
 echo ""
 echo "Done."
