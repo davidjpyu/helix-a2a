@@ -44,6 +44,14 @@ mkdir -p "${RESULT_DIR}"
 timestamp() { echo "[$(date '+%H:%M:%S')]"; }
 
 # =========================================================================
+# HuggingFace: use offline mode + writable cache for lock files
+# =========================================================================
+export HF_HUB_OFFLINE=1
+export HF_HOME="/tmp/hf_home_$$"
+export TRANSFORMERS_CACHE="/models/.cache/huggingface/hub"
+mkdir -p "${HF_HOME}"
+
+# =========================================================================
 # Install dependencies (all nodes)
 # =========================================================================
 if ! python3 -c "import ray" &>/dev/null; then
