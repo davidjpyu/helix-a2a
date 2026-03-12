@@ -215,10 +215,11 @@ try:
     h = json.load(open('${native_file}'))['choices'][0]['text']
     if n == h:
         print('MATCH')
+        print(f'  Output: {n[:120]}')
     else:
         print('MISMATCH')
-        print(f'  NCCL:   {n[:100]}')
-        print(f'  Native: {h[:100]}')
+        print(f'  NCCL:   {n[:120]}')
+        print(f'  Native: {h[:120]}')
 except Exception as e:
     print(f'ERROR: {e}')
 ")
@@ -226,12 +227,14 @@ except Exception as e:
     first_line=$(echo "${result}" | head -1)
     if [ "${first_line}" = "MATCH" ]; then
         echo "  Prompt ${i}: MATCH"
+        echo "${result}" | tail -n +2
         PASS=$((PASS + 1))
     elif [[ "${first_line}" == ERROR* ]]; then
         echo "  Prompt ${i}: ${result}"
         ERROR=$((ERROR + 1))
     else
-        echo "  Prompt ${i}: ${result}"
+        echo "  Prompt ${i}: MISMATCH"
+        echo "${result}" | tail -n +2
         FAIL=$((FAIL + 1))
     fi
 done
