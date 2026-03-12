@@ -94,6 +94,49 @@ print('=== [helix_a2a] gpu_worker patched: pre-init before graph capture ===')
 "
 fi
 
+# --- Hotfix: TPA + DCP FA3 output buffer shape mismatch ---
+# When TPA < TP, attention has fewer heads per rank than the pre-allocated
+# buffer expects. Patch _dcp_fa_out to slice the heads dimension.
+FA_FILE=$(python3 -c "import vllm.v1.attention.backends.flash_attn as m; print(m.__file__)")
+if [ -f "$FA_FILE" ] && grep -q "def _dcp_fa_out" "$FA_FILE"; then
+    python3 -c "
+f = '$FA_FILE'
+src = open(f).read()
+old = '''    def _dcp_fa_out(
+        self,
+        buf: torch.Tensor | None,
+        num_tokens: int,
+    ) -> torch.Tensor | None:
+        \"\"\"Slice pre-allocated FA output buffer, or None for prefill.\"\"\"
+        if buf is not None and num_tokens <= buf.shape[0]:
+            return buf[:num_tokens]
+        return None'''
+new = '''    def _dcp_fa_out(
+        self,
+        buf: torch.Tensor | None,
+        num_tokens: int,
+        num_heads: int | None = None,
+    ) -> torch.Tensor | None:
+        \"\"\"Slice pre-allocated FA output buffer, or None for prefill.\"\"\"
+        if buf is not None and num_tokens <= buf.shape[0]:
+            out = buf[:num_tokens]
+            if num_heads is not None and num_heads < out.shape[1]:
+                out = out[:, :num_heads]
+            return out
+        return None'''
+if old in src:
+    src = src.replace(old, new)
+    src = src.replace(
+        'out=self._dcp_fa_out(self._dcp_context_out, context_q.shape[0]),',
+        'out=self._dcp_fa_out(self._dcp_context_out, context_q.shape[0], context_q.shape[1]),'
+    )
+    open(f, 'w').write(src)
+    print('=== [helix_a2a] FA3 TPA+DCP hotfix applied ===')
+else:
+    print('=== [helix_a2a] FA3 TPA+DCP hotfix: already patched or different code version ===')
+"
+fi
+
 # Quick sanity import
 python3 -c "
 from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_lse_reduce, _HELIX_BACKEND
