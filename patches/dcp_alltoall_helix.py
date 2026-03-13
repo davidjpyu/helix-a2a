@@ -78,15 +78,10 @@ def _init_helix_workspace(cp_rank: int, cp_size: int, cp_group):
     )
     _helix_a2a.init_workspace(workspace, cp_rank, cp_size)
 
-    # All ranks must finish init_workspace (cudaMemsetAsync on the local
-    # workspace row) before ANY rank calls alltoall().  The alltoall sender
-    # writes to remote workspaces via NVLink; if the remote rank's memset
-    # hasn't completed, it will overwrite the sender's FIFO data and the
-    # receiver will poll stale 0xFF flags forever → deadlock.
-    #
-    # cuda.synchronize() flushes the local memset, then the Gloo barrier
-    # ensures every rank has reached this point.
-    torch.cuda.synchronize()
+    # init_workspace is now synchronous (stream sync inside the package).
+    # Cross-rank barrier ensures ALL ranks have finished init before any
+    # rank calls alltoall — required because the alltoall sender writes
+    # to remote workspaces via NVLink.
     if cpu_group is not None:
         dist.barrier(cpu_group)
     else:

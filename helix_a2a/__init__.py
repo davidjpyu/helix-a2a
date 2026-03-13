@@ -49,13 +49,21 @@ def allocate_workspace(
 ) -> torch.Tensor:
     """Allocate a workspace tensor of shape ``[cp_size, ws_elems_per_rank]``.
 
+    After allocation, call :func:`init_workspace` followed by a cross-rank
+    barrier before the first :func:`alltoall` call.  Typical setup::
+
+        workspace = helix_a2a.allocate_workspace(cp_size, cp_rank, mnnvl=True, cpu_group=group)
+        helix_a2a.init_workspace(workspace, cp_rank, cp_size)
+        dist.barrier(group)   # ensure ALL ranks finish init before any alltoall
+        # ... now safe to call helix_a2a.alltoall()
+
     Args:
         cp_size: Context-parallel group size.
         cp_rank: This rank's position in the CP group.
         device: Device for plain allocation (default ``"cuda"``).
         mnnvl: ``False`` for device memory, ``True`` for MNNVL, ``"auto"``
             for MNNVL when multi-node + aarch64.
-        cpu_group: CPU process group for MNNVL handle exchange.
+        cpu_group: Process group for MNNVL handle exchange (Gloo or NCCL).
 
     Returns:
         ``torch.int64`` tensor of shape ``[cp_size, ws_elems_per_rank]``.
@@ -74,8 +82,21 @@ def allocate_workspace(
 def init_workspace(
     workspace: torch.Tensor, cp_rank: int, cp_size: int
 ) -> None:
-    """Initialize the workspace (FIFO reset). Call once before the first alltoall."""
+    """Initialize the workspace (FIFO reset). Call once before the first alltoall.
+
+    This resets the FIFO buffers in the **local** workspace row
+    (``workspace[cp_rank]``).  The operation is synchronous: when this
+    function returns, the GPU memset is guaranteed to have completed on
+    the current device.
+
+    .. important::
+        With MNNVL workspaces, **all ranks** must complete
+        ``init_workspace`` before **any** rank calls :func:`alltoall`.
+        Insert a cross-rank barrier (e.g. ``dist.barrier()``) between
+        ``init_workspace`` and the first ``alltoall`` call.
+    """
     initialize_workspace(workspace, cp_rank, cp_size)
+    torch.cuda.current_stream().synchronize()
 
 
 def alltoall(
