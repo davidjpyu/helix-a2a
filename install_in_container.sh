@@ -80,9 +80,14 @@ init_block = '''
         # MNNVL allocation requires Gloo collectives — must run while
         # all ranks are synchronised, before capture_model().
         if self.parallel_config.decode_context_parallel_size > 1:
+            import logging as _hx_log
+            _hx_log.getLogger(__name__).info("[helix_a2a] pre-init: calling dcp_a2a_ensure_initialized (dcp=%d)", self.parallel_config.decode_context_parallel_size)
             from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized
             from vllm.distributed.parallel_state import get_dcp_group
             dcp_a2a_ensure_initialized(get_dcp_group())
+            import torch.distributed as dist
+            dist.barrier(get_dcp_group().device_group)
+            _hx_log.getLogger(__name__).info("[helix_a2a] pre-init: workspace ready, barrier passed")
 '''
 src = src.replace(
     marker,
@@ -91,6 +96,18 @@ src = src.replace(
 )
 open('${VLLM_WORKER}', 'w').write(src)
 print('=== [helix_a2a] gpu_worker patched: pre-init before graph capture ===')
+
+# Print context around the patch to verify placement
+lines = open('${VLLM_WORKER}').readlines()
+for i, line in enumerate(lines):
+    if 'dcp_a2a_ensure_initialized' in line:
+        start = max(0, i-3)
+        end = min(len(lines), i+8)
+        print('=== [helix_a2a] Patch context (lines %d-%d):' % (start+1, end))
+        for j in range(start, end):
+            prefix = '>>>' if j == i else '   '
+            print('%s %4d: %s' % (prefix, j+1, lines[j].rstrip()))
+        break
 "
 fi
 
