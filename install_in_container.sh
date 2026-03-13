@@ -53,39 +53,6 @@ cp "${VLLM_DCP}" "${VLLM_DCP}.bak"
 # Overwrite with patched version
 cp "${PATCH_FILE}" "${VLLM_DCP}"
 
-# --- Patch gpu_worker.py: pre-init helix workspace before graph capture ---
-if [ "${HELIX_A2A_BACKEND:-nccl}" = "native" ]; then
-    VLLM_WORKER=$(python3 -c "
-import vllm.v1.worker.gpu_worker as m
-print(m.__file__)
-")
-    # Insert dcp_a2a_ensure_initialized() call right before capture_model().
-    # This ensures MNNVL workspace allocation (which needs Gloo collectives)
-    # completes while all ranks are synchronised, before CUDA graph capture.
-    python3 -c "
-import re, sys
-
-src = open('${VLLM_WORKER}').read()
-marker = 'kernel_warmup(self)'
-if 'dcp_a2a_ensure_initialized' in src:
-    print('=== [helix_a2a] gpu_worker already patched, skipping ===')
-    sys.exit(0)
-if marker not in src:
-    print('=== [helix_a2a] WARNING: could not find kernel_warmup in gpu_worker, skipping ===')
-    sys.exit(0)
-
-import_line = 'from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized'
-init_block = chr(10) + '        if self.parallel_config.decode_context_parallel_size > 1:' + chr(10) + '            from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized' + chr(10) + '            from vllm.distributed.parallel_state import get_dcp_group' + chr(10) + '            dcp_a2a_ensure_initialized(get_dcp_group())' + chr(10) + '            import torch.distributed as dist' + chr(10) + '            dist.barrier(get_dcp_group().device_group)' + chr(10)
-src = src.replace(
-    marker,
-    marker + init_block,
-    1,
-)
-open('${VLLM_WORKER}', 'w').write(src)
-print('=== [helix_a2a] gpu_worker patched: pre-init + barrier before graph capture ===')
-"
-fi
-
 # --- Hotfix: TPA + DCP FA3 output buffer shape mismatch ---
 # When TPA < TP, attention has fewer heads per rank than the pre-allocated
 # buffer expects. Patch _dcp_fa_out to slice the heads dimension.
