@@ -75,26 +75,14 @@ if marker not in src:
     sys.exit(0)
 
 import_line = 'from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized'
-init_block = chr(10) + '        if self.parallel_config.decode_context_parallel_size > 1:' + chr(10) + "            import sys; print('[helix_a2a] pre-init: starting dcp=' + str(self.parallel_config.decode_context_parallel_size), file=sys.stderr, flush=True)" + chr(10) + '            from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized' + chr(10) + '            from vllm.distributed.parallel_state import get_dcp_group' + chr(10) + '            dcp_a2a_ensure_initialized(get_dcp_group())' + chr(10) + '            import torch.distributed as dist' + chr(10) + '            dist.barrier(get_dcp_group().device_group)' + chr(10) + "            print('[helix_a2a] pre-init: workspace ready, barrier passed', file=sys.stderr, flush=True)" + chr(10)
+init_block = chr(10) + '        if self.parallel_config.decode_context_parallel_size > 1:' + chr(10) + '            from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized' + chr(10) + '            from vllm.distributed.parallel_state import get_dcp_group' + chr(10) + '            dcp_a2a_ensure_initialized(get_dcp_group())' + chr(10) + '            import torch.distributed as dist' + chr(10) + '            dist.barrier(get_dcp_group().device_group)' + chr(10)
 src = src.replace(
     marker,
     marker + init_block,
     1,
 )
 open('${VLLM_WORKER}', 'w').write(src)
-print('=== [helix_a2a] gpu_worker patched: pre-init before graph capture ===')
-
-# Print context around the patch to verify placement
-lines = open('${VLLM_WORKER}').readlines()
-for i, line in enumerate(lines):
-    if 'dcp_a2a_ensure_initialized' in line:
-        start = max(0, i-3)
-        end = min(len(lines), i+8)
-        print('=== [helix_a2a] Patch context around line ' + str(i+1) + ':')
-        for j in range(start, end):
-            tag = '>>>' if j == i else '   '
-            print(tag + ' ' + str(j+1) + ': ' + lines[j].rstrip())
-        break
+print('=== [helix_a2a] gpu_worker patched: pre-init + barrier before graph capture ===')
 "
 fi
 
