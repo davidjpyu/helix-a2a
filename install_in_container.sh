@@ -75,7 +75,7 @@ if marker not in src:
     sys.exit(0)
 
 import_line = 'from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized'
-init_block = chr(10) + '        if self.parallel_config.decode_context_parallel_size > 1:' + chr(10) + '            import sys; print("[helix_a2a] pre-init: starting, dcp=" + str(self.parallel_config.decode_context_parallel_size), file=sys.stderr, flush=True)' + chr(10) + '            from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized' + chr(10) + '            from vllm.distributed.parallel_state import get_dcp_group' + chr(10) + '            dcp_a2a_ensure_initialized(get_dcp_group())' + chr(10) + '            import torch.distributed as dist' + chr(10) + '            dist.barrier(get_dcp_group().device_group)' + chr(10) + '            print("[helix_a2a] pre-init: workspace ready, barrier passed", file=sys.stderr, flush=True)' + chr(10)
+init_block = chr(10) + '        if self.parallel_config.decode_context_parallel_size > 1:' + chr(10) + "            import sys; print('[helix_a2a] pre-init: starting dcp=' + str(self.parallel_config.decode_context_parallel_size), file=sys.stderr, flush=True)" + chr(10) + '            from vllm.v1.attention.ops.dcp_alltoall import dcp_a2a_ensure_initialized' + chr(10) + '            from vllm.distributed.parallel_state import get_dcp_group' + chr(10) + '            dcp_a2a_ensure_initialized(get_dcp_group())' + chr(10) + '            import torch.distributed as dist' + chr(10) + '            dist.barrier(get_dcp_group().device_group)' + chr(10) + "            print('[helix_a2a] pre-init: workspace ready, barrier passed', file=sys.stderr, flush=True)" + chr(10)
 src = src.replace(
     marker,
     marker + init_block,
